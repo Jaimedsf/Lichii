@@ -1219,7 +1219,7 @@ GraphicsPipeline* PipelineCache::UsePipeline(GraphicsPipeline* pipeline) {
         SaveUsedPipelines();
     }
     if (current_pipeline) {
-        current_pipeline->AddTransition(pipeline);
+        current_pipeline->AddTransition(pipeline, graphics_key);
     }
     current_pipeline = pipeline;
     current_pipeline->MarkUsed(frame_count);

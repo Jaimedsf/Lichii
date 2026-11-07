@@ -141,7 +141,10 @@ public:
     GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
     GraphicsPipeline(const GraphicsPipeline&) = delete;
 
-    void AddTransition(GraphicsPipeline* transition);
+    /// Notes that a draw with `transition_key` used `transition` after this pipeline, so Next()
+    /// finds it without a cache lookup. The key is the draw's, which differs from the
+    /// transition's own when the draw reuses a pipeline of another attribute-type variant.
+    void AddTransition(GraphicsPipeline* transition, const GraphicsPipelineCacheKey& transition_key);
 
     /// The key this pipeline was built from (the one its disk cache entry has).
     [[nodiscard]] const GraphicsPipelineCacheKey& Key() const noexcept {

@@ -201,7 +201,8 @@ private:
         const GraphicsPipelineCacheKey& key) const;
     /// Notes which vertex attributes the translated vertex program `info` reads.
     void RecordReadAttributes(const GraphicsPipelineCacheKey& key, const Shader::Info& info);
-    /// Makes `pipeline` the current one and returns it when the draw may use it.
+    /// Makes `pipeline` the current one for the draw with `graphics_key` and returns it when the
+    /// draw may use it.
     GraphicsPipeline* UsePipeline(GraphicsPipeline* pipeline);
     mutable std::mutex read_attributes_mutex;
     std::unordered_map<u64, u64> read_attribute_masks; ///< vertex shaders -> 2 bits per attribute

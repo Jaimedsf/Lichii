@@ -404,8 +404,15 @@ GraphicsPipeline::GraphicsPipeline(
     build.emplace(worker_thread, std::move(func));
 }
 
-void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
-    transition_keys.push_back(transition->key);
+void GraphicsPipeline::AddTransition(GraphicsPipeline* transition,
+                                     const GraphicsPipelineCacheKey& transition_key) {
+    // A draw whose key is not found takes the slow path, which adds its transition again: without
+    // this check the list grew every frame, and Next() scanned it on every draw.
+    if (std::find(transition_keys.begin(), transition_keys.end(), transition_key) !=
+        transition_keys.end()) {
+        return;
+    }
+    transition_keys.push_back(transition_key);
     transitions.push_back(transition);
 }
 
