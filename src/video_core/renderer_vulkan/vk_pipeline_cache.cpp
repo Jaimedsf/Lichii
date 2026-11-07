@@ -1164,10 +1164,10 @@ void PipelineCache::EvictUnusedPipelines() {
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
-    // EDEN_NX2_EVICT_AFTER_FRAMES=<n> overrides the 9000 frames (5 min at 30 FPS); 0 never evicts,
-    // for GPUs with driver memory to spare, so going back to an area builds nothing again.
+    // EDEN_NX2_EVICT_AFTER_FRAMES=<n> evicts after n unused frames (upstream: 9000, 5 min at 30 FPS).
+    // This fork defaults to 0, never evicting, so going back to an area builds nothing again.
     static const u64 EvictAfterFrames = [] {
-        constexpr u64 DefaultEvictAfterFrames = 9000;
+        constexpr u64 DefaultEvictAfterFrames = 0; // fork: never evict by default
         const char* const value = std::getenv("EDEN_NX2_EVICT_AFTER_FRAMES");
         if (value == nullptr || value[0] == '\0') {
             return DefaultEvictAfterFrames;
@@ -1234,7 +1234,8 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     /// Reads EDEN_NX2_ASYNC_DISCARD once and logs when it is on.
     static const bool discard_native = [] {
         const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD");
-        const bool enabled = value != nullptr && value[0] == '1';
+        // fork: on by default; EDEN_NX2_ASYNC_DISCARD=0 waits for the pipeline as upstream does.
+        const bool enabled = value == nullptr || value[0] != '0';
         if (enabled) {
             LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws skip unbuilt pipelines");
         }
