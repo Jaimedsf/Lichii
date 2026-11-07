@@ -54,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="build-${GITHUB_RUN_NUMBER}"
+          tag="fork-${GITHUB_RUN_NUMBER}"
           if tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag" --jq '.object.sha' 2>/dev/null); then
             if [ "$tag_sha" != "$GITHUB_SHA" ]; then
               echo "Release tag $tag points to $tag_sha instead of $GITHUB_SHA"
@@ -432,7 +432,7 @@ jobs:
           export EXTRA_QT_MODULES=waylandcompositor
           export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
           # Embedded in the AppImage metadata; matches the release tag (build-N) plus the commit.
-          export LDAI_VERSION="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          export LDAI_VERSION="fork-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
           export LDAI_OUTPUT="lichii-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
@@ -648,12 +648,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/build-${GITHUB_RUN_NUMBER}" --jq '.object.sha')
+          tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/fork-${GITHUB_RUN_NUMBER}" --jq '.object.sha')
           if [ "$tag_sha" != "$GITHUB_SHA" ]; then
-            echo "Release tag build-${GITHUB_RUN_NUMBER} points to $tag_sha instead of $GITHUB_SHA"
+            echo "Release tag fork-${GITHUB_RUN_NUMBER} points to $tag_sha instead of $GITHUB_SHA"
             exit 1
           fi
-          tag="build-${GITHUB_RUN_NUMBER}"
+          tag="fork-${GITHUB_RUN_NUMBER}"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
           link() { [[ -e "dist/$2" ]] && echo "[$1](${base}/$2)" || true; }
@@ -716,5 +716,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --prerelease \
-            --title "Lichii ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --title "Lichii fork ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             --notes-file notes.md
