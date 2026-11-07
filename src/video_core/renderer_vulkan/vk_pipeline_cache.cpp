@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -1163,7 +1164,29 @@ void PipelineCache::EvictUnusedPipelines() {
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
-    constexpr u64 EvictAfterFrames = 9000;
+    // EDEN_NX2_EVICT_AFTER_FRAMES=<n> overrides the 9000 frames (5 min at 30 FPS); 0 never evicts,
+    // for GPUs with driver memory to spare, so going back to an area builds nothing again.
+    static const u64 EvictAfterFrames = [] {
+        constexpr u64 DefaultEvictAfterFrames = 9000;
+        const char* const value = std::getenv("EDEN_NX2_EVICT_AFTER_FRAMES");
+        if (value == nullptr || value[0] == '\0') {
+            return DefaultEvictAfterFrames;
+        }
+        char* end = nullptr;
+        const unsigned long long frames = std::strtoull(value, &end, 10);
+        if (end == value || *end != '\0') {
+            LOG_WARNING(Render_Vulkan, "EDEN_NX2_EVICT_AFTER_FRAMES={} is not a number, using {}",
+                        value, DefaultEvictAfterFrames);
+            return DefaultEvictAfterFrames;
+        }
+        LOG_INFO(Render_Vulkan, "EDEN_NX2_EVICT_AFTER_FRAMES: {}",
+                 frames == 0 ? std::string{"pipelines are never evicted"}
+                             : fmt::format("evict after {} unused frames", frames));
+        return static_cast<u64>(frames);
+    }();
+    if (EvictAfterFrames == 0) {
+        return;
+    }
     if (frame_count <= EvictAfterFrames) {
         return;
     }
