@@ -143,6 +143,11 @@ public:
 
     void AddTransition(GraphicsPipeline* transition);
 
+    /// The key this pipeline was built from (the one its disk cache entry has).
+    [[nodiscard]] const GraphicsPipelineCacheKey& Key() const noexcept {
+        return key;
+    }
+
     bool Configure(bool is_indexed) {
         return configure_func(this, is_indexed);
     }

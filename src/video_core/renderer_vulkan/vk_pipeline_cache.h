@@ -29,6 +29,7 @@
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
+#include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
@@ -192,6 +193,18 @@ private:
 
     ::Common::unordered_map<ComputePipelineCacheKey, ComputePipelineCacheEntry> compute_cache;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+
+    /// `key` with the types of the vertex attributes its vertex shader never reads cleared, once
+    /// a pipeline with that vertex shader was translated; `key` itself before that. Draws that
+    /// differ only in those types share one pipeline instead of translating it again.
+    [[nodiscard]] GraphicsPipelineCacheKey MaskUnreadAttributes(
+        const GraphicsPipelineCacheKey& key) const;
+    /// Notes which vertex attributes the translated vertex program `info` reads.
+    void RecordReadAttributes(const GraphicsPipelineCacheKey& key, const Shader::Info& info);
+    /// Makes `pipeline` the current one and returns it when the draw may use it.
+    GraphicsPipeline* UsePipeline(GraphicsPipeline* pipeline);
+    mutable std::mutex read_attributes_mutex;
+    std::unordered_map<u64, u64> read_attribute_masks; ///< vertex shaders -> 2 bits per attribute
 
     ShaderPools main_pools;
     std::mutex spare_pools_mutex;

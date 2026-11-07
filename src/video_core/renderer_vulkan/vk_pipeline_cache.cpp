@@ -753,7 +753,7 @@ void PipelineCache::SaveUsedPipelines() {
     next.reserve(used_pipelines.size() + used_this_session.size());
     for (const auto& [key, pipeline] : graphics_cache) {
         if (used_this_session.contains(pipeline.get())) {
-            next.emplace(key.Hash(), u8{0});
+            next.emplace(pipeline->Key().Hash(), u8{0});
         }
     }
     for (const u64 hash : used_and_evicted) {
@@ -988,7 +988,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
-                graphics_cache.emplace(key, std::move(pipeline));
+                // Variants that differ only in attributes the vertex shader never reads share
+                // one pipeline; a second one with the same masked key keeps its own key.
+                const GraphicsPipelineCacheKey masked{MaskUnreadAttributes(key)};
+                if (!graphics_cache.contains(masked)) {
+                    graphics_cache.emplace(masked, std::move(pipeline));
+                } else {
+                    graphics_cache.emplace(key, std::move(pipeline));
+                }
             }
             ++state.built;
             if (state.has_loaded) {
@@ -1118,7 +1125,66 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
 }
 } // Anonymous namespace
 
+namespace {
+u64 VertexShadersHash(const GraphicsPipelineCacheKey& key) noexcept {
+    return key.unique_hashes[0] * 0x9E3779B97F4A7C15ULL ^ key.unique_hashes[1];
+}
+} // Anonymous namespace
+
+GraphicsPipelineCacheKey PipelineCache::MaskUnreadAttributes(
+    const GraphicsPipelineCacheKey& key) const {
+    if (!key.state.dynamic_vertex_input || key.unique_hashes[1] == 0) {
+        return key;
+    }
+    u64 mask;
+    {
+        std::scoped_lock lock{read_attributes_mutex};
+        const auto it{read_attribute_masks.find(VertexShadersHash(key))};
+        if (it == read_attribute_masks.end()) {
+            return key;
+        }
+        mask = it->second;
+    }
+    GraphicsPipelineCacheKey masked{key};
+    masked.state.attribute_types &= mask;
+    return masked;
+}
+
+void PipelineCache::RecordReadAttributes(const GraphicsPipelineCacheKey& key,
+                                         const Shader::Info& info) {
+    if (!key.state.dynamic_vertex_input) {
+        return;
+    }
+    // The SPIR-V declares an input only for a generic the program loads (or passes through), so
+    // the type of any other attribute does not change it (see EmitContext::DefineInputs).
+    u64 mask{};
+    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
+        if (info.loads.Generic(index) || info.passthrough.Generic(index)) {
+            mask |= u64{3} << (index * 2);
+        }
+    }
+    std::scoped_lock lock{read_attributes_mutex};
+    read_attribute_masks.insert_or_assign(VertexShadersHash(key), mask);
+}
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+    // A pipeline translated for these shaders with other types in attributes the vertex shader
+    // never reads is the same pipeline: use it instead of translating the shaders again.
+    const GraphicsPipelineCacheKey shared_key{MaskUnreadAttributes(graphics_key)};
+    if (shared_key != graphics_key) {
+        const auto shared{graphics_cache.find(shared_key)};
+        if (shared != graphics_cache.end() && shared->second) {
+            static std::unordered_set<u64> shared_variants;
+            if (shared_variants.insert(graphics_key.Hash()).second &&
+                (shared_variants.size() == 1 || shared_variants.size() % 25 == 0)) {
+                LOG_INFO(Render_Vulkan,
+                         "{} pipeline variants reused a pipeline whose vertex shader ignores the "
+                         "attribute types they differ in (no translation)",
+                         shared_variants.size());
+            }
+            return UsePipeline(shared->second.get());
+        }
+    }
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
@@ -1131,15 +1197,31 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     if (!pipeline) {
         return nullptr;
     }
+    if (is_new) {
+        // Its vertex shader is translated now: file it under the key with the unread attribute
+        // types cleared, so the variants that differ only in those find it.
+        const GraphicsPipelineCacheKey masked{MaskUnreadAttributes(graphics_key)};
+        if (masked != graphics_key && !graphics_cache.contains(masked)) {
+            std::unique_ptr<GraphicsPipeline> owned{std::move(pipeline)};
+            graphics_cache.erase(graphics_key);
+            auto& slot{graphics_cache[masked]};
+            slot = std::move(owned);
+            return UsePipeline(slot.get());
+        }
+    }
+    return UsePipeline(pipeline.get());
+}
+
+GraphicsPipeline* PipelineCache::UsePipeline(GraphicsPipeline* pipeline) {
     constexpr auto save_interval = std::chrono::seconds{15};
-    if (used_this_session.insert(pipeline.get()).second &&
+    if (used_this_session.insert(pipeline).second &&
         std::chrono::steady_clock::now() - used_pipelines_saved > save_interval) {
         SaveUsedPipelines();
     }
     if (current_pipeline) {
-        current_pipeline->AddTransition(pipeline.get());
+        current_pipeline->AddTransition(pipeline);
     }
-    current_pipeline = pipeline.get();
+    current_pipeline = pipeline;
     current_pipeline->MarkUsed(frame_count);
     return BuiltPipeline(current_pipeline);
 }
@@ -1201,7 +1283,7 @@ void PipelineCache::EvictUnusedPipelines() {
             continue;
         }
         if (used_this_session.erase(pipeline) != 0) {
-            used_and_evicted.insert(it->first.Hash());
+            used_and_evicted.insert(pipeline->Key().Hash());
         }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         it = graphics_cache.erase(it);
@@ -1395,7 +1477,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         infos[stage_index] = &program.info;
 
         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
+        // Legacy inputs are mapped onto generics by their types, so a vertex program that loads
+        // them depends on every attribute type and is never shared.
+        const bool loads_legacy{program.info.loads.Legacy()};
         ConvertLegacyToGeneric(program, runtime_info);
+        if (index == 1 && !loads_legacy) {
+            RecordReadAttributes(key, program.info);
+        }
         if (emit_pools) {
             deferred_runtime_infos[stage_index] = runtime_info;
             if (VideoCommon::Nx2Perf::Verify()) {
