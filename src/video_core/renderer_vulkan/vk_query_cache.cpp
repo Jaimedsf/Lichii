@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -210,15 +211,39 @@ public:
         last_accumulation_checkpoint = (std::max)(last_accumulation_checkpoint, num_slots_used);
     }
 
+    static size_t MaxSamplesQuerySlots() {
+        static const size_t slots = [] {
+            constexpr size_t Default = SamplesQueryBank::BANK_SIZE * 8;
+            const char* const value = std::getenv("EDEN_NX2_SAMPLES_QUERY_MAX_SLOTS");
+            if (value == nullptr || value[0] == '\0') {
+                return Default;
+            }
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 10);
+            if (end == value || *end != '\0' || parsed < SamplesQueryBank::BANK_SIZE) {
+                LOG_WARNING(Render_Vulkan,
+                            "EDEN_NX2_SAMPLES_QUERY_MAX_SLOTS={} is not a number of at least {}, "
+                            "using {}",
+                            value, SamplesQueryBank::BANK_SIZE, Default);
+                return Default;
+            }
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_SAMPLES_QUERY_MAX_SLOTS: {}", parsed);
+            return static_cast<size_t>(parsed);
+        }();
+        return slots;
+    }
+
     // Called at each submission. The running query carries the count across it: a guest's
     // reset-to-report window can span one.
     void CloseCounter() override {
         PauseCounter();
         // A title that counts without resetting or reporting grows the query by a slot at every
         // submission and render pass, and the query keeps every bank it touches alive. Ocarina of
-        // Time's title screen and file select reached 16,384 slots over 64 banks (its gameplay
-        // windows span at most 36 slots). Past a bank, drop the count as a reset would.
-        if (current_query && current_query->size_slots > SamplesQueryBank::BANK_SIZE) {
+        // Time's title screen and file select reached 16,384 slots over 64 banks. Its gameplay
+        // windows reach ~360 slots (attacking near flowers), so dropping past one bank (256) hid
+        // foliage for a frame some 30 times a second. Past MaxSamplesQuerySlots() (8 banks by
+        // default, EDEN_NX2_SAMPLES_QUERY_MAX_SLOTS=<n> to change), drop the count as a reset would.
+        if (current_query && current_query->size_slots > MaxSamplesQuerySlots()) {
             // It drops a real count. Logged on the 1st, 2nd, 4th, 8th... drop, so a window this
             // long during gameplay doesn't go unnoticed and a title screen doesn't flood the log.
             ++bank_bound_resets;
