@@ -625,6 +625,13 @@ jobs:
           # Asset names drop the commit sha: the release tag already identifies the build, and
           # stable names let the notes table link to them.
           strip_sha() { sed "s/-${GITHUB_SHA}//" <<< "$1"; }
+          # Fork: with a single artifact (Windows only) download-artifact puts its files straight
+          # in artifacts/, so zip them as the Windows package instead of zipping each subfolder.
+          if [[ -e artifacts/lichii.exe ]]; then
+            (cd artifacts && zip -qr "${GITHUB_WORKSPACE}/dist/lichii-windows-x86_64.zip" . -x '*.pdb')
+            ls -la dist
+            exit 0
+          fi
           for artifact in artifacts/*/; do
             name=$(basename "$artifact")
             if compgen -G "$artifact*.AppImage" > /dev/null; then
