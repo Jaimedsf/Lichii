@@ -237,24 +237,48 @@ public:
     // reset-to-report window can span one.
     void CloseCounter() override {
         PauseCounter();
-        // A title that counts without resetting or reporting grows the query by a slot at every
-        // submission and render pass, and the query keeps every bank it touches alive. Ocarina of
-        // Time's title screen and file select reached 16,384 slots over 64 banks. Its gameplay
-        // windows reach ~360 slots (attacking near flowers), so dropping past one bank (256) hid
-        // foliage for a frame some 30 times a second. Past MaxSamplesQuerySlots() (8 banks by
-        // default, EDEN_NX2_SAMPLES_QUERY_MAX_SLOTS=<n> to change), drop the count as a reset would.
+        // A title that counts without resetting grows the query by a slot at every submission and
+        // render pass, and the query keeps every bank it touches alive. Ocarina of Time never
+        // resets it during gameplay (thousands of slots a second while attacking). Dropping the
+        // count there, as a reset would, made the game read a total lower than its last one and
+        // hide foliage (flowers flickering; all of it during an attack with a larger window).
+        // Past MaxSamplesQuerySlots() the count is folded instead: resolved and carried into the
+        // accumulated value as a wait-for-idle sync does, and counting goes on in a new query.
         if (current_query && current_query->size_slots > MaxSamplesQuerySlots()) {
-            // It drops a real count. Logged on the 1st, 2nd, 4th, 8th... drop, so a window this
-            // long during gameplay doesn't go unnoticed and a title screen doesn't flood the log.
             ++bank_bound_resets;
             if ((bank_bound_resets & (bank_bound_resets - 1)) == 0) {
-                LOG_WARNING(Render_Vulkan,
-                            "Samples query ran {} slots with no reset or report, dropped its "
-                            "count (drop {})",
-                            current_query->size_slots, bank_bound_resets);
+                LOG_INFO(Render_Vulkan,
+                         "Samples query ran {} slots with no reset, folded its count into the "
+                         "accumulated value (fold {})",
+                         current_query->size_slots, bank_bound_resets);
             }
-            ResetCounter();
+            FoldCurrentQuery();
         }
+    }
+
+    /// Carries the running query's count into the accumulated value and starts counting anew,
+    /// through the same resolve a wait-for-idle sync runs (PresyncWrites then SyncWrites), so both
+    /// the host value (amend) and the GPU one (accumulation buffer) keep the samples. The query
+    /// added for it has no guest address: it only makes the sync cover the running query.
+    void FoldCurrentQuery() {
+        const size_t index = BuildQuery();
+        auto* fold_query = GetQuery(index);
+        fold_query->guest_address = 0;
+        fold_query->value = 0;
+        fold_query->flags &= ~VideoCommon::QueryFlagBits::IsOrphan;
+        fold_query->start_bank_id = current_query->start_bank_id;
+        fold_query->size_banks = current_query->size_banks;
+        fold_query->start_slot = current_query->start_slot;
+        fold_query->size_slots = current_query->size_slots;
+        ApplyBankOp(fold_query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
+            bank->AddReference(amount);
+        });
+        pending_sync.push_back(index);
+        PresyncWrites();
+        runtime.Barriers(true);
+        SyncWrites();
+        runtime.Barriers(false);
+        Free(index);
     }
 
     bool HasPendingSync() const override {
@@ -346,6 +370,10 @@ public:
                 sync_value_slot = 1;
             }
             query->flags |= VideoCommon::QueryFlagBits::IsHostSynced;
+            if (query->guest_address == 0) {
+                // A fold (FoldCurrentQuery): it has no guest value to write.
+                continue;
+            }
             auto loc_data = offsets[query->start_bank_id];
             sync_values_stash[sync_value_slot].emplace_back(HostSyncValues{
                 .address = query->guest_address,
